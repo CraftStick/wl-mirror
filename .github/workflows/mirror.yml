@@ -25,5 +25,4 @@ jobs:
           }
           failed=0
           publish wl   https://hub.mos.ru/rkp/sub-roskompozor/raw/main/wl || { echo "::warning::wl failed"; failed=1; }
-          publish kfwl https://hub.mos.ru/kfwl/auto/raw/main/wl           || { echo "::warning::kfwl failed"; failed=1; }
           exit $failed

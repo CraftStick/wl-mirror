@@ -12,9 +12,18 @@ jobs:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          curl -fsS -m 30 -o wl https://hub.mos.ru/rkp/sub-roskompozor/raw/main/wl
-          test "$(grep -c '://' wl)" -ge 5
-          jq -Rs '{files:{wl:{content:.}}}' wl | curl -fsS -X PATCH \
-            -H "Authorization: Bearer $GIST_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/gists/$GIST_ID" -d @- > /dev/null
+          # Каждый список — своим файлом гиста и независимо: упавший или опустевший
+          # источник не должен останавливать копию остальных.
+          publish() {
+            name="$1"; url="$2"
+            curl -fsS -m 30 -o "$name" "$url" || return 1
+            test "$(grep -c '://' "$name")" -ge 5 || return 1
+            jq -Rs --arg n "$name" '{files:{($n):{content:.}}}' "$name" | curl -fsS -X PATCH \
+              -H "Authorization: Bearer $GIST_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/gists/$GIST_ID" -d @- > /dev/null
+          }
+          failed=0
+          publish wl   https://hub.mos.ru/rkp/sub-roskompozor/raw/main/wl || { echo "::warning::wl failed"; failed=1; }
+          publish kfwl https://hub.mos.ru/kfwl/auto/raw/main/wl           || { echo "::warning::kfwl failed"; failed=1; }
+          exit $failed

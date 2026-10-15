@@ -14,15 +14,22 @@ jobs:
         run: |
           # Каждый список — своим файлом гиста и независимо: упавший или опустевший
           # источник не должен останавливать копию остальных.
+          # Повторы — на разовые сбои раннера: то не разрешится имя hub.mos.ru (curl 6),
+          # то придёт 403, а через полминуты тот же запрос проходит. Красный прогон
+          # остаётся только для отказа, который держится дольше минуты.
+          retry=(--retry 4 --retry-delay 15 --retry-all-errors)
           publish() {
             name="$1"; url="$2"
-            curl -fsS -m 30 -o "$name" "$url" || return 1
-            test "$(grep -c '://' "$name")" -ge 5 || return 1
-            jq -Rs --arg n "$name" '{files:{($n):{content:.}}}' "$name" | curl -fsS -X PATCH \
+            curl -fsS -m 30 "${retry[@]}" -o "$name" "$url" \
+              || { echo "::warning::$name: source download failed"; return 1; }
+            test "$(grep -c '://' "$name")" -ge 5 \
+              || { echo "::warning::$name: fewer than 5 configs"; return 1; }
+            jq -Rs --arg n "$name" '{files:{($n):{content:.}}}' "$name" | curl -fsS -m 30 "${retry[@]}" -X PATCH \
               -H "Authorization: Bearer $GIST_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/gists/$GIST_ID" -d @- > /dev/null
+              "https://api.github.com/gists/$GIST_ID" -d @- > /dev/null \
+              || { echo "::warning::$name: gist update failed"; return 1; }
           }
           failed=0
-          publish wl   https://hub.mos.ru/rkp/sub-roskompozor/raw/main/wl || { echo "::warning::wl failed"; failed=1; }
+          publish wl   https://hub.mos.ru/rkp/sub-roskompozor/raw/main/wl || failed=1
           exit $failed

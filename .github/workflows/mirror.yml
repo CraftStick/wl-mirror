@@ -17,16 +17,38 @@ jobs:
           # Повторы — на разовые сбои раннера: то не разрешится имя hub.mos.ru (curl 6),
           # то придёт 403, а через полминуты тот же запрос проходит. Красный прогон
           # остаётся только для отказа, который держится дольше минуты.
+          #
+          # Огрызок источника в гист не идёт. С 17.10 автообновление РКП то и дело
+          # коммитит 1–7 строк вместо 45–80 и стоит так часами; порог 5 пропустил
+          # такой огрызок из 7 строк, и он полчаса пролежал в гисте. Старая копия
+          # лучше огрызка: бот всё равно проверяет каждый узел, а огрызок отнимает
+          # живые серверы.
+          # Огрызок у источника — не сбой зеркала, прогон остаётся зелёным с
+          # предупреждением. Красным он станет, когда копия в гисте старше 12 ч: тогда
+          # источник, похоже, умер, и решать, держать ли его в .env бота, — человеку.
+          # Возраст — у гиста целиком (updated_at); пока файл в нём один, это его возраст.
+          set -o pipefail
           retry=(--retry 4 --retry-delay 15 --retry-all-errors)
+          api=(-H "Authorization: Bearer $GIST_TOKEN" -H "Accept: application/vnd.github+json")
+          min_configs=20
+          max_stale_hours=12
           publish() {
             name="$1"; url="$2"
             curl -fsS -m 30 "${retry[@]}" -o "$name" "$url" \
               || { echo "::warning::$name: source download failed"; return 1; }
-            test "$(grep -c '://' "$name")" -ge 5 \
-              || { echo "::warning::$name: fewer than 5 configs"; return 1; }
+            n=$(grep -c '://' "$name")
+            if [ "$n" -lt "$min_configs" ]; then
+              updated=$(curl -fsS -m 30 "${retry[@]}" "${api[@]}" "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at) \
+                || { echo "::warning::$name: gist read failed"; return 1; }
+              age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
+              if [ "$age" -ge "$max_stale_hours" ]; then
+                echo "::warning::$name: source has $n configs, gist copy is ${age}h old"; return 1
+              fi
+              echo "::warning::$name: source has only $n configs, gist keeps the copy from $updated"
+              return 0
+            fi
             jq -Rs --arg n "$name" '{files:{($n):{content:.}}}' "$name" | curl -fsS -m 30 "${retry[@]}" -X PATCH \
-              -H "Authorization: Bearer $GIST_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
+              "${api[@]}" \
               "https://api.github.com/gists/$GIST_ID" -d @- > /dev/null \
               || { echo "::warning::$name: gist update failed"; return 1; }
           }

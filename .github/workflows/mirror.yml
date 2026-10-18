@@ -15,37 +15,45 @@ jobs:
           # Каждый список — своим файлом гиста и независимо: упавший или опустевший
           # источник не должен останавливать копию остальных.
           # Повторы — на разовые сбои раннера: то не разрешится имя hub.mos.ru (curl 6),
-          # то придёт 403, а через полминуты тот же запрос проходит. Красный прогон
-          # остаётся только для отказа, который держится дольше минуты.
+          # то придёт 403, а через полминуты тот же запрос проходит.
           #
           # Огрызок источника в гист не идёт. С 17.10 автообновление РКП то и дело
           # коммитит 1–7 строк вместо 45–80 и стоит так часами; порог 5 пропустил
           # такой огрызок из 7 строк, и он полчаса пролежал в гисте. Старая копия
           # лучше огрызка: бот всё равно проверяет каждый узел, а огрызок отнимает
           # живые серверы.
-          # Огрызок у источника — не сбой зеркала, прогон остаётся зелёным с
-          # предупреждением. Красным он станет, когда копия в гисте старше 12 ч: тогда
-          # источник, похоже, умер, и решать, держать ли его в .env бота, — человеку.
+          #
+          # Отказ источника — не скачался или отдал огрызок — не сбой зеркала: гист
+          # держит прежнюю копию, прогон зелёный с предупреждением. hub.mos.ru бывает
+          # лежит по часу (18.10: минуту сплошных 403, через полчаса 500/502 и
+          # таймауты), и красный прогон на каждые полчаса такого часа — шум. Красным
+          # прогон станет, когда копия в гисте старше 12 ч: тогда источник, похоже,
+          # умер, и решать, держать ли его в .env бота, — человеку. Отказ самого гиста
+          # (истёк токен) — сбой зеркала, он красный сразу.
           # Возраст — у гиста целиком (updated_at); пока файл в нём один, это его возраст.
           set -o pipefail
           retry=(--retry 4 --retry-delay 15 --retry-all-errors)
           api=(-H "Authorization: Bearer $GIST_TOKEN" -H "Accept: application/vnd.github+json")
           min_configs=20
           max_stale_hours=12
+          keep_copy() {
+            name="$1"; why="$2"
+            updated=$(curl -fsS -m 30 "${retry[@]}" "${api[@]}" "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at) \
+              || { echo "::warning::$name: $why; gist read failed"; return 1; }
+            age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
+            if [ "$age" -ge "$max_stale_hours" ]; then
+              echo "::warning::$name: $why, gist copy is ${age}h old"; return 1
+            fi
+            echo "::warning::$name: $why, gist keeps the copy from $updated"
+          }
           publish() {
             name="$1"; url="$2"
-            curl -fsS -m 30 "${retry[@]}" -o "$name" "$url" \
-              || { echo "::warning::$name: source download failed"; return 1; }
+            if ! curl -fsS -m 30 "${retry[@]}" -o "$name" "$url"; then
+              keep_copy "$name" "source download failed"; return
+            fi
             n=$(grep -c '://' "$name")
             if [ "$n" -lt "$min_configs" ]; then
-              updated=$(curl -fsS -m 30 "${retry[@]}" "${api[@]}" "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at) \
-                || { echo "::warning::$name: gist read failed"; return 1; }
-              age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
-              if [ "$age" -ge "$max_stale_hours" ]; then
-                echo "::warning::$name: source has $n configs, gist copy is ${age}h old"; return 1
-              fi
-              echo "::warning::$name: source has only $n configs, gist keeps the copy from $updated"
-              return 0
+              keep_copy "$name" "source has only $n configs"; return
             fi
             jq -Rs --arg n "$name" '{files:{($n):{content:.}}}' "$name" | curl -fsS -m 30 "${retry[@]}" -X PATCH \
               "${api[@]}" \

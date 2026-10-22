@@ -9,9 +9,6 @@ jobs:
     steps:
       - name: check gist freshness
         env:
-          # Читать гист может любой токен: прав на запись здесь больше не нужно, поэтому
-          # встроенный токен Actions, а не PAT в секретах.
-          GH_TOKEN: ${{ github.token }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           # Список РКП в гист кладёт не этот репозиторий, а таймер wl-mirror-rkp на машине в РФ:
@@ -22,11 +19,21 @@ jobs:
           # Возраст — у гиста целиком (updated_at); пока файл в нём один, это его возраст.
           # Таймер выкладывает только изменившийся список, а РКП коммитит примерно раз в час,
           # так что 12 ч без обновления — уже не случайность.
+          #
+          # Гист читается без токена: секретный гист открыт всякому, кто знает id, а встроенный
+          # токен Actions к гистам не пускает (403). Лимит без токена — 60 запросов в час на адрес,
+          # а адреса раннеров общие, так что отказ API — не повод краснеть: следующий прогон
+          # через полчаса. Красный — только старая копия или пропавший гист (404).
           set -o pipefail
           max_stale_hours=12
-          updated=$(curl -fsS -m 30 --retry 4 --retry-delay 15 --retry-all-errors \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at)
+          code=$(curl -sS -m 30 -o gist.json -w '%{http_code}' \
+            -H "Accept: application/vnd.github+json" "https://api.github.com/gists/$GIST_ID") || code=000
+          case "$code" in
+            200) ;;
+            404) echo "::error::wl: gist not found"; exit 1 ;;
+            *) echo "::warning::wl: GitHub API answered $code, freshness not checked"; exit 0 ;;
+          esac
+          updated=$(jq -er .updated_at gist.json)
           age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
           if [ "$age" -ge "$max_stale_hours" ]; then
             echo "::error::wl: gist copy is ${age}h old (updated $updated)"; exit 1

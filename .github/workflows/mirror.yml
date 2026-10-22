@@ -7,59 +7,26 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - name: fetch and publish
+      - name: check gist freshness
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          # Каждый список — своим файлом гиста и независимо: упавший или опустевший
-          # источник не должен останавливать копию остальных.
-          # Повторы — на разовые сбои раннера: то не разрешится имя hub.mos.ru (curl 6),
-          # то придёт 403, а через полминуты тот же запрос проходит.
-          #
-          # Огрызок источника в гист не идёт. С 17.10 автообновление РКП то и дело
-          # коммитит 1–7 строк вместо 45–80 и стоит так часами; порог 5 пропустил
-          # такой огрызок из 7 строк, и он полчаса пролежал в гисте. Старая копия
-          # лучше огрызка: бот всё равно проверяет каждый узел, а огрызок отнимает
-          # живые серверы.
-          #
-          # Отказ источника — не скачался или отдал огрызок — не сбой зеркала: гист
-          # держит прежнюю копию, прогон зелёный с предупреждением. hub.mos.ru бывает
-          # лежит по часу (18.10: минуту сплошных 403, через полчаса 500/502 и
-          # таймауты), и красный прогон на каждые полчаса такого часа — шум. Красным
-          # прогон станет, когда копия в гисте старше 12 ч: тогда источник, похоже,
-          # умер, и решать, держать ли его в .env бота, — человеку. Отказ самого гиста
-          # (истёк токен) — сбой зеркала, он красный сразу.
+          # Список РКП в гист кладёт не этот репозиторий, а таймер wl-mirror-rkp на машине в РФ:
+          # с 20.10.2026 hub.mos.ru отвечает 403 на каждый запрос раннеров GitHub. Здесь осталась
+          # только сигнализация — красный прогон, когда копия в гисте старше 12 ч. Тогда либо
+          # источник умер (и решать, держать ли его в .env бота, — человеку), либо встал таймер
+          # или истёк его токен: смотреть `systemctl status wl-mirror-rkp` и `journalctl -u wl-mirror-rkp`.
           # Возраст — у гиста целиком (updated_at); пока файл в нём один, это его возраст.
+          # Таймер выкладывает только изменившийся список, а РКП коммитит примерно раз в час,
+          # так что 12 ч без обновления — уже не случайность.
           set -o pipefail
-          retry=(--retry 4 --retry-delay 15 --retry-all-errors)
-          api=(-H "Authorization: Bearer $GIST_TOKEN" -H "Accept: application/vnd.github+json")
-          min_configs=20
           max_stale_hours=12
-          keep_copy() {
-            name="$1"; why="$2"
-            updated=$(curl -fsS -m 30 "${retry[@]}" "${api[@]}" "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at) \
-              || { echo "::warning::$name: $why; gist read failed"; return 1; }
-            age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
-            if [ "$age" -ge "$max_stale_hours" ]; then
-              echo "::warning::$name: $why, gist copy is ${age}h old"; return 1
-            fi
-            echo "::warning::$name: $why, gist keeps the copy from $updated"
-          }
-          publish() {
-            name="$1"; url="$2"
-            if ! curl -fsS -m 30 "${retry[@]}" -o "$name" "$url"; then
-              keep_copy "$name" "source download failed"; return
-            fi
-            n=$(grep -c '://' "$name")
-            if [ "$n" -lt "$min_configs" ]; then
-              keep_copy "$name" "source has only $n configs"; return
-            fi
-            jq -Rs --arg n "$name" '{files:{($n):{content:.}}}' "$name" | curl -fsS -m 30 "${retry[@]}" -X PATCH \
-              "${api[@]}" \
-              "https://api.github.com/gists/$GIST_ID" -d @- > /dev/null \
-              || { echo "::warning::$name: gist update failed"; return 1; }
-          }
-          failed=0
-          publish wl   https://hub.mos.ru/rkp/sub-roskompozor/raw/main/wl || failed=1
-          exit $failed
+          updated=$(curl -fsS -m 30 --retry 4 --retry-delay 15 --retry-all-errors \
+            -H "Authorization: Bearer $GIST_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at)
+          age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
+          if [ "$age" -ge "$max_stale_hours" ]; then
+            echo "::error::wl: gist copy is ${age}h old (updated $updated)"; exit 1
+          fi
+          echo "wl: gist updated $updated (${age}h ago)"

@@ -9,7 +9,9 @@ jobs:
     steps:
       - name: check gist freshness
         env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          # Читать гист может любой токен: прав на запись здесь больше не нужно, поэтому
+          # встроенный токен Actions, а не PAT в секретах.
+          GH_TOKEN: ${{ github.token }}
           GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           # Список РКП в гист кладёт не этот репозиторий, а таймер wl-mirror-rkp на машине в РФ:
@@ -23,7 +25,7 @@ jobs:
           set -o pipefail
           max_stale_hours=12
           updated=$(curl -fsS -m 30 --retry 4 --retry-delay 15 --retry-all-errors \
-            -H "Authorization: Bearer $GIST_TOKEN" -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/gists/$GIST_ID" | jq -er .updated_at)
           age=$(( ($(date +%s) - $(date -d "$updated" +%s)) / 3600 ))
           if [ "$age" -ge "$max_stale_hours" ]; then
